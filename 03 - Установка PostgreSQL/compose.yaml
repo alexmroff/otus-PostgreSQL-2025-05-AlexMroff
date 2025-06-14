@@ -1,0 +1,11 @@
+services:
+  postgres:
+    image: postgres:15.13
+    environment:
+      - POSTGRES_PASSWORD=SuperSecretPassword
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    ports:
+      - 5433:5432
+    volumes:
+      - /pgdata:/var/lib/postgresql/data:rw
+    container_name: postgres15
