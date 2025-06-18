@@ -104,3 +104,28 @@
     (1 row)
 
 ## Часть 3
+
+Перемонтировали существующий диск ко второму серверу:
+
+    root@pg-02:~# mkdir /opt/lalala
+    root@pg-02:~# mount --source /dev/sdb1 --target /opt/lalala/
+    root@pg-02:~# ls /opt/lalala/main/
+    base    pg_commit_ts  pg_logical    pg_notify    pg_serial     pg_stat      pg_subtrans  pg_twophase  pg_wal   postgresql.auto.conf  postmaster.pid
+    global  pg_dynshmem   pg_multixact  pg_replslot  pg_snapshots  pg_stat_tmp  pg_tblspc    PG_VERSION   pg_xact  postmaster.opts
+
+Кластер успешно стартовал:
+
+    root@pg-02:~# pg_ctlcluster 17 main start
+    root@pg-02:~# pg_lsclusters
+    Ver Cluster Port Status Owner    Data directory   Log file
+    17  main    5432 online postgres /opt/lalala/main /var/log/postgresql/postgresql-17-main.log
+
+Данные в таблице целые:
+
+    postgres=# select * from test;
+    c1
+    ----
+    1
+    (1 row)
+
+По большому счету часть 3 ничем не отличается от части 2...
