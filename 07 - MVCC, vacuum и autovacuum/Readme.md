@@ -1,4 +1,4 @@
-# Домашнее задание к уроку №6 - MVCC, vacuum и autovacuum
+# Домашнее задание к уроку №7 - MVCC, vacuum и autovacuum
 
 ## Часть 1. pgbench
 
