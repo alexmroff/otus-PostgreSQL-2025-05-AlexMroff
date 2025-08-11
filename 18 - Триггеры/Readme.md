@@ -21,60 +21,60 @@
 
 Одна триггерная функция для всех триггеров, учитывающая в том числе появление товаров, которых до этого не было в витрине.
 
-CREATE OR REPLACE FUNCTION pract_functions.sales_trigger() RETURNS trigger AS 
-$$
-	BEGIN
-		IF TG_OP = 'INSERT' THEN
-			-- Если товар уже есть в витрине
-            IF EXISTS 
-				(SELECT *
-				 FROM pract_functions.goods g INNER JOIN pract_functions.good_sum_mart gsm
-				 ON gsm.good_name = g.good_name
-				 WHERE NEW.good_id = g.goods_id
-				)
-			THEN
-				WITH good_values (good_name, good_price) AS
-					(SELECT g.good_name, g.good_price FROM pract_functions.goods g
-					 WHERE g.goods_id = NEW.good_id)
-				UPDATE pract_functions.good_sum_mart gsm
-					SET sum_sale = sum_sale + good_values.good_price * NEW.sales_qty
-					FROM good_values
-					WHERE gsm.good_name = good_values.good_name;
-				RETURN NEW;
-			-- Если это новый товар, которого в витрине пока нет
-            ELSE
-				WITH good_values (good_name, good_price) AS
-					(SELECT g.good_name, g.good_price FROM pract_functions.goods g
-					 WHERE g.goods_id = NEW.good_id)
-				INSERT INTO pract_functions.good_sum_mart (good_name, sum_sale)
-				SELECT good_name, good_price * NEW.sales_qty
-				FROM good_values;
-				RETURN NEW;
-			END IF;
-		-- Если запись о продаже обновилась
-        ELSIF TG_OP = 'UPDATE' THEN
-			WITH good_values (good_name, good_price) AS
-				(SELECT g.good_name, g.good_price FROM pract_functions.goods g
-				 WHERE g.goods_id = NEW.good_id)
-			UPDATE pract_functions.good_sum_mart gsm
-				SET sum_sale = sum_sale + good_values.good_price * (NEW.sales_qty - OLD.sales_qty)
-				FROM good_values
-				WHERE gsm.good_name = good_values.good_name;			
-			RETURN NEW;
-		-- Если запись о продаже удалилась
-        ELSIF TG_OP = 'DELETE' THEN
-			WITH good_values (good_name, good_price) AS
-				(SELECT g.good_name, g.good_price FROM pract_functions.goods g
-				 WHERE g.goods_id = OLD.good_id)
-			UPDATE pract_functions.good_sum_mart gsm
-				SET sum_sale = sum_sale - good_values.good_price * OLD.sales_qty
-				FROM good_values
-				WHERE gsm.good_name = good_values.good_name;			
-			RETURN OLD;
-		END IF;	
-	END;
-$$
-LANGUAGE 'plpgsql';
+    CREATE OR REPLACE FUNCTION pract_functions.sales_trigger() RETURNS trigger AS 
+    $$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                -- Если товар уже есть в витрине
+                IF EXISTS 
+                    (SELECT *
+                    FROM pract_functions.goods g INNER JOIN pract_functions.good_sum_mart gsm
+                    ON gsm.good_name = g.good_name
+                    WHERE NEW.good_id = g.goods_id
+                    )
+                THEN
+                    WITH good_values (good_name, good_price) AS
+                        (SELECT g.good_name, g.good_price FROM pract_functions.goods g
+                        WHERE g.goods_id = NEW.good_id)
+                    UPDATE pract_functions.good_sum_mart gsm
+                        SET sum_sale = sum_sale + good_values.good_price * NEW.sales_qty
+                        FROM good_values
+                        WHERE gsm.good_name = good_values.good_name;
+                    RETURN NEW;
+                -- Если это новый товар, которого в витрине пока нет
+                ELSE
+                    WITH good_values (good_name, good_price) AS
+                        (SELECT g.good_name, g.good_price FROM pract_functions.goods g
+                        WHERE g.goods_id = NEW.good_id)
+                    INSERT INTO pract_functions.good_sum_mart (good_name, sum_sale)
+                    SELECT good_name, good_price * NEW.sales_qty
+                    FROM good_values;
+                    RETURN NEW;
+                END IF;
+            -- Если запись о продаже обновилась
+            ELSIF TG_OP = 'UPDATE' THEN
+                WITH good_values (good_name, good_price) AS
+                    (SELECT g.good_name, g.good_price FROM pract_functions.goods g
+                    WHERE g.goods_id = NEW.good_id)
+                UPDATE pract_functions.good_sum_mart gsm
+                    SET sum_sale = sum_sale + good_values.good_price * (NEW.sales_qty - OLD.sales_qty)
+                    FROM good_values
+                    WHERE gsm.good_name = good_values.good_name;			
+                RETURN NEW;
+            -- Если запись о продаже удалилась
+            ELSIF TG_OP = 'DELETE' THEN
+                WITH good_values (good_name, good_price) AS
+                    (SELECT g.good_name, g.good_price FROM pract_functions.goods g
+                    WHERE g.goods_id = OLD.good_id)
+                UPDATE pract_functions.good_sum_mart gsm
+                    SET sum_sale = sum_sale - good_values.good_price * OLD.sales_qty
+                    FROM good_values
+                    WHERE gsm.good_name = good_values.good_name;			
+                RETURN OLD;
+            END IF;	
+        END;
+    $$
+    LANGUAGE 'plpgsql';
 
 ## Триггеры
 
