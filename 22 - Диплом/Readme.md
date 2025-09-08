@@ -9,6 +9,7 @@
 * Prometheus 3.5.0
 * Grafana 12.1.1
 * Node Exporter 1.9.1
+* ETCD 3.6.4
 
 ## Первичная подготовка
 
@@ -22,7 +23,7 @@
 
 Добавляем в /etc/hosts на всех машинах:
 
-    192.168.2.105 ptrn-1
+    192.168.2.96  ptrn-1
     192.168.2.91  ptrn-2
     192.168.2.98  ptrn-3
     192.168.2.99  prmt-1
@@ -181,7 +182,143 @@
 
 ## Установка и настройка кластера ETCD
 
--
+Выполняем на нодах ptrn-1, ptrn-2, ptrn-3:
 
+    wget https://github.com/etcd-io/etcd/releases/download/v3.6.4/etcd-v3.6.4-linux-amd64.tar.gz
+    tar xzvf etcd-v3.6.4-linux-amd64.tar.gz
+    mv /tmp/etcd-v3.6.4-linux-amd64/etcd* /usr/local/bin/
+    groupadd --system etcd
+    useradd -s /sbin/nologin --system -g etcd etcd
+    mkdir /opt/etcd
+    mkdir /etc/etcd
+    chown -R etcd:etcd /opt/etcd
+    chmod -R 700 /opt/etcd/
 
+Создаем конфигурационный файл /etc/etcd/etcd.conf.
+
+ptrn-1:
+
+    ETCD_NAME="ptrn-1"
+    ETCD_LISTEN_CLIENT_URLS="http://192.168.2.96:2379,http://127.0.0.1:2379"
+    ETCD_ADVERTISE_CLIENT_URLS="http://192.168.2.96:2379"
+    ETCD_LISTEN_PEER_URLS="http://192.168.2.96:2380"
+    ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.168.2.96:2380"
+    ETCD_INITIAL_CLUSTER_TOKEN="etcd-postgres-cluster"
+    ETCD_INITIAL_CLUSTER="ptrn-1=http://192.168.2.96:2380,ptrn-2=http://192.168.2.91:2380,ptrn-3=http://192.168.2.98:2380"
+    ETCD_INITIAL_CLUSTER_STATE="new"
+    ETCD_DATA_DIR="/opt/etcd"
+    ETCD_ELECTION_TIMEOUT="10000"
+    ETCD_HEARTBEAT_INTERVAL="2000"
+    ETCD_INITIAL_ELECTION_TICK_ADVANCE="false"
+    ETCD_ENABLE_V2="true"
+
+ptrn-2:
+
+    ETCD_NAME="ptrn-2"
+    ETCD_LISTEN_CLIENT_URLS="http://192.168.2.91:2379,http://127.0.0.1:2379"
+    ETCD_ADVERTISE_CLIENT_URLS="http://192.168.2.91:2379"
+    ETCD_LISTEN_PEER_URLS="http://192.168.2.91:2380"
+    ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.168.2.91:2380"
+    ETCD_INITIAL_CLUSTER_TOKEN="etcd-postgres-cluster"
+    ETCD_INITIAL_CLUSTER="ptrn-1=http://192.168.2.96:2380,ptrn-2=http://192.168.2.91:2380,ptrn-3=http://192.168.2.98:2380"
+    ETCD_INITIAL_CLUSTER_STATE="new"
+    ETCD_DATA_DIR="/opt/etcd"
+    ETCD_ELECTION_TIMEOUT="10000"
+    ETCD_HEARTBEAT_INTERVAL="2000"
+    ETCD_INITIAL_ELECTION_TICK_ADVANCE="false"
+    ETCD_ENABLE_V2="true"
+
+ptrn-3:
+
+    ETCD_NAME="ptrn-3"
+    ETCD_LISTEN_CLIENT_URLS="http://192.168.2.98:2379,http://127.0.0.1:2379"
+    ETCD_ADVERTISE_CLIENT_URLS="http://192.168.2.98:2379"
+    ETCD_LISTEN_PEER_URLS="http://192.168.2.98:2380"
+    ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.168.2.98:2380"
+    ETCD_INITIAL_CLUSTER_TOKEN="etcd-postgres-cluster"
+    ETCD_INITIAL_CLUSTER="ptrn-1=http://192.168.2.96:2380,ptrn-2=http://192.168.2.91:2380,ptrn-3=http://192.168.2.98:2380"
+    ETCD_INITIAL_CLUSTER_STATE="new"
+    ETCD_DATA_DIR="/opt/etcd"
+    ETCD_ELECTION_TIMEOUT="10000"
+    ETCD_HEARTBEAT_INTERVAL="2000"
+    ETCD_INITIAL_ELECTION_TICK_ADVANCE="false"
+    ETCD_ENABLE_V2="true"
+
+Создаем на всех трёх нодах файл systemd-юнита:
+
+    cat /etc/systemd/system/etcd.service
+    [Unit]
+    Description=Etcd Server
+    Documentation=https://github.com/etcd-io/etcd
+    After=network.target
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    User=etcd
+    Type=notify
+    WorkingDirectory=/opt/etcd/
+    EnvironmentFile=-/etc/etcd/etcd.conf
+    User=etcd
+    # set GOMAXPROCS to number of processors
+    ExecStart=/bin/bash -c "GOMAXPROCS=$(nproc) /usr/local/bin/etcd"
+    Restart=on-failure
+    LimitNOFILE=65536
+    IOSchedulingClass=realtime
+    IOSchedulingPriority=0
+    Nice=-20
+
+    [Install]
+    WantedBy=multi-user.target
+
+Запускаем службу на всех трех нодах:
+
+    systemctl daemon-reload && systemctl enable etcd && systemctl start etcd
+
+Видим, что кластер собрался и работает:
+
+    root@ptrn-2:~# etcdctl member list
+    513eb46eca501, started, ptrn-1, http://192.168.2.105:2380, http://192.168.2.96:2379, false
+    455812df4c39a5e5, started, ptrn-3, http://192.168.2.98:2380, http://192.168.2.98:2379, false
+    83b8164138628079, started, ptrn-2, http://192.168.2.91:2380, http://192.168.2.91:2379, false
+
+    root@ptrn-2:~# etcdctl endpoint status --cluster
+    http://192.168.2.96:2379, 513eb46eca501, 3.6.4, 3.6.0, 20 kB, 16 kB, 20%, 0 B, false, false, 7, 26, 26, , , false
+    http://192.168.2.98:2379, 455812df4c39a5e5, 3.6.4, 3.6.0, 20 kB, 16 kB, 20%, 0 B, true, false, 7, 26, 26, , , false
+    http://192.168.2.91:2379, 83b8164138628079, 3.6.4, 3.6.0, 20 kB, 16 kB, 20%, 0 B, false, false, 7, 26, 26, , , false
+
+    root@ptrn-2:~# etcdctl endpoint health --cluster
+    http://192.168.2.98:2379 is healthy: successfully committed proposal: took = 48.877664ms
+    http://192.168.2.91:2379 is healthy: successfully committed proposal: took = 48.710623ms
+    http://192.168.2.96:2379 is healthy: successfully committed proposal: took = 48.770278ms
+
+На prmt-1 добавляем метрики etcd в prometheus.yml:
+
+    root@prmt-1:~# cat /opt/prometheus/prometheus.yml
+    global:
+    scrape_interval: 15s
+
+    rule_files:
+    - "rules/node-exporter.yml"
+
+    scrape_configs:
+    - job_name: 'prometheus'
+        static_configs:
+        - targets: ['localhost:9090']
+
+    - job_name: 'node_exporter'
+        static_configs:
+        - targets: ['ptrn-1:9100', 'ptrn-2:9100', 'ptrn-3:9100', 'prmt-1:9100']
+
+    - job_name: "etcd"
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+        - targets: ["ptrn-1:2379", "ptrn-2:2379", "ptrn-3:2379"]
+
+Импортируем дашборд в Графану и в ней наблюдаем как при перезагрузке лидера кластера статус лидера переходит к другой ноде:
+
+![Дашборд ETCD](images/06-tg_alert_example.png)
+
+Установка и настройка кластера ETCD завершена!
 
