@@ -10,6 +10,7 @@
 * Grafana 12.1.1
 * Node Exporter 1.9.1
 * ETCD 3.6.4
+* PostgreSQL 16
 
 ## Первичная подготовка
 
@@ -327,6 +328,160 @@ ptrn-3:
 
 ![Алерт ETCD в Телеге](images/08-etcd_alert.png)
 
-## Next
+## Установка и настройка PostgreSQL 
 
--
+Будем работать с PostgreSQL 16. Устанавливаем его на ptrn-1 и ptrn-2.
+Для простоты будем работать с базой данных **postgres**:
+
+    apt install -y postgresql-common
+    /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+    apt update
+    apt -y install postgresql-16
+
+    root@ptrn-1:~# pg_lsclusters
+    Ver Cluster Port Status Owner    Data directory              Log file
+    16  main    5432 online postgres /var/lib/postgresql/16/main /var/log/postgresql/postgresql-16-main.log
+
+Изменяем значения в postgresql.conf согласно best practices:
+
+    # DB Version: 16
+    # OS Type: linux
+    # DB Type: oltp
+    # Total Memory (RAM): 20 GB
+    # CPUs num: 4
+    # Connections num: 20
+    # Data Storage: hdd
+
+    max_connections = 20
+    shared_buffers = 5GB
+    effective_cache_size = 15GB
+    maintenance_work_mem = 1280MB
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+    default_statistics_target = 100
+    random_page_cost = 4
+    effective_io_concurrency = 2
+    work_mem = 218453kB
+    huge_pages = off
+    min_wal_size = 2GB
+    max_wal_size = 8GB
+    max_worker_processes = 4
+    max_parallel_workers_per_gather = 2
+    max_parallel_workers = 4
+    max_parallel_maintenance_workers = 2
+    shared_preload_libraries = 'pg_stat_statements'
+
+Добавляем пользователя **replicator**:
+
+    root@ptrn-1:~# sudo -u postgres psql
+    psql (16.10 (Ubuntu 16.10-1.pgdg24.04+1))
+    Type "help" for help.
+
+    postgres=# create user replicator replication login encrypted password '123456';
+    CREATE ROLE
+
+Задаем пароль для пользователя **postgres**:
+
+    postgres=# \password postgres;
+    Enter new password for user "postgres": 123456
+    Enter it again: 123456
+
+Устанавливаем расширение **pg_stat_statements**:
+
+    postgres=# CREATE EXTENSION pg_stat_statements;
+    CREATE EXTENSION
+
+Создаем пользователя **pgbouncer**:
+
+    postgres=# create user pgbouncer password '123456';
+    CREATE ROLE
+
+Добавляем записи в **pg_hba.conf**. Для задач диплома обходимся выдачей "широкого" набора прав с точки зрения подсетей.
+
+    # Database administrative login by Unix domain socket
+    local   all             postgres                                peer
+
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+    # "local" is for Unix domain socket connections only
+    local   all             all                                     peer
+    # IPv4 local connections:
+    host    all             all             127.0.0.1/32            scram-sha-256
+    host    all             all             192.168.0.0/16          md5
+    # IPv6 local connections:
+    host    all             all             ::1/128                 scram-sha-256
+    # Allow replication connections from localhost, by a user with the
+    # replication privilege.
+    local   replication     all                                     peer
+    host    replication     replicator      localhost               trust
+    host    replication     all             127.0.0.1/32            scram-sha-256
+    host    replication     all             ::1/128                 scram-sha-256
+    host    replication     replicator      192.168.0.0/16          md5
+
+Проверяем версию сервера:
+
+    postgres=# SELECT version();
+                                                                version
+    -------------------------------------------------------------------------------------------------------------------------------------
+    PostgreSQL 16.10 (Ubuntu 16.10-1.pgdg24.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, 64-bit
+    (1 row)
+
+На данный момент оставляем PostgreSQL работать на обоих серверах и переходим к настройке наблюдаемости.
+Postgres Exporter устанавливается как Docker-контейнер.
+
+Конфигурация:
+
+    services:
+
+    postgres-exporter:
+        image: quay.io/prometheuscommunity/postgres-exporter
+        container_name: postgres-exporter
+        network_mode: "host"
+        environment:
+        - DATA_SOURCE_URI=localhost:5432/postgres?sslmode=disable
+        - DATA_SOURCE_USER=postgres
+        - DATA_SOURCE_PASS=123456
+        restart: unless-stopped
+
+Запуск:
+
+    docker compose up -d
+
+Добавляем эндпойнты в конфиг Prometheus:
+
+    global:
+    scrape_interval: 15s
+
+    rule_files:
+    - "rules/node-exporter.yml"
+    - "rules/etcd-exporter.yml"
+    - "rules/postgres-exporter.yml"
+
+    scrape_configs:
+    - job_name: 'prometheus'
+        static_configs:
+        - targets: ['localhost:9090']
+
+    - job_name: 'node_exporter'
+        static_configs:
+        - targets: ['ptrn-1:9100', 'ptrn-2:9100', 'ptrn-3:9100', 'prmt-1:9100']
+
+    - job_name: 'etcd'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+        - targets: ["ptrn-1:2379", "ptrn-2:2379", "ptrn-3:2379"]
+
+    - job_name: 'postgres'
+        static_configs:
+        - targets: ["ptrn-1:9187", "ptrn-2:9187"]
+
+Утаскиваем какой-нибудь дашборд с сайта Графаны:
+
+![Дашборд PostgreSQL в Графане](images/09-psql_dashboard.png)
+
+И переходим к следующему этапу.
+
+## Установка и настройка keepalived
+
+
