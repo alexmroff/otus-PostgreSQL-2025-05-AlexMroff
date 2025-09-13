@@ -11,6 +11,8 @@
 * Node Exporter 1.9.1
 * ETCD 3.6.4
 * PostgreSQL 16
+* Postgres Exporter: https://github.com/prometheus-community/postgres_exporter
+* Patroni 4.0.6
 
 ## Первичная подготовка
 
@@ -482,6 +484,506 @@ Postgres Exporter устанавливается как Docker-контейне�
 
 И переходим к следующему этапу.
 
+## Установка и настройка Patroni
+
+Выполняем на ptrn-1 и ptrn-2.
+Поскольку у нас уже добавлен репозиторий PGDG, то Patroni ставится одной простой командой:
+
+    apt-get install patroni
+
+После установки добавляем на хосты конфигурационный файл **/etc/patroni/patroni.yml**
+
+ptrn-1:
+
+    ---
+
+    scope: postgres-cluster
+    name: ptrn-1
+    namespace: /service/
+
+    restapi:
+    listen: 192.168.2.96:8008
+    connect_address: 192.168.2.96:8008
+    authentication:
+        username: patroni
+        password: '123456'
+
+    etcd3:
+    hosts: 192.168.2.96:2379,192.168.2.91:2379,192.168.2.98:2379
+
+    bootstrap:
+    method: initdb
+    dcs:
+        ttl: 60
+        loop_wait: 10
+        retry_timeout: 27
+        maximum_lag_on_failover: 2048576
+        master_start_timeout: 300
+        synchronous_mode: true
+        synchronous_mode_strict: false
+        synchronous_node_count: 1
+        postgresql:
+        use_pg_rewind: false
+        use_slots: true
+        parameters:
+            max_connections: 800
+            superuser_reserved_connections: 5
+            max_locks_per_transaction: 64
+            max_prepared_transactions: 0
+            huge_pages: off
+            shared_buffers: 5GB
+            work_mem: 218453kB
+            maintenance_work_mem: 1280MB
+            effective_cache_size: 15GB
+            checkpoint_timeout: 15min
+            checkpoint_completion_target: 0.9
+            min_wal_size: 2GB
+            max_wal_size: 8GB
+            wal_buffers: 16MB
+            default_statistics_target: 100
+            seq_page_cost: 1
+            random_page_cost: 4
+            effective_io_concurrency: 2
+            synchronous_commit: on
+            autovacuum: on
+            autovacuum_max_workers: 5
+            autovacuum_vacuum_scale_factor: 0.01
+            autovacuum_analyze_scale_factor: 0.02
+            autovacuum_vacuum_cost_limit: 200
+            autovacuum_vacuum_cost_delay: 20
+            autovacuum_naptime: 1s
+            max_files_per_process: 4096
+            archive_mode: on
+            archive_timeout: 1800s
+            archive_command: cd .
+            wal_level: replica
+            wal_keep_segments: 130
+            max_wal_senders: 10
+            max_replication_slots: 10
+            hot_standby: on
+            hot_standby_feedback: True
+            wal_log_hints: on
+            shared_preload_libraries: pg_stat_statements,auto_explain
+            pg_stat_statements.max: 10000
+            pg_stat_statements.track: all
+            pg_stat_statements.save: off
+            auto_explain.log_min_duration: 10s
+            auto_explain.log_analyze: true
+            auto_explain.log_buffers: true
+            auto_explain.log_timing: false
+            auto_explain.log_triggers: true
+            auto_explain.log_verbose: true
+            auto_explain.log_nested_statements: true
+            track_io_timing: on
+            log_lock_waits: on
+            log_temp_files: 0
+            track_activities: on
+            track_counts: on
+            track_functions: all
+            log_checkpoints: on
+            logging_collector: on
+            log_statement: mod
+            log_truncate_on_rotation: on
+            log_rotation_age: 1d
+            log_rotation_size: 0
+            log_line_prefix: '%m [%p] %q%u@%d '
+            log_filename: 'postgresql-%a.log'
+            log_directory: /var/log/postgresql
+
+    initdb:
+        - encoding: UTF8
+        - locale: en_US.UTF-8
+        - data-checksums
+
+    pg_hba:  # должен содержать адреса ВСЕХ машин, используемых в кластере
+        - host all all 192.168.0.0/16 md5
+        - host replication replicator 127.0.0.1/32 md5
+        - host replication replicator 192.168.0.0/16 md5
+
+    postgresql:
+    listen: 192.168.2.96,127.0.0.1:5432
+    connect_address: 192.168.2.96:5432
+    use_unix_socket: true
+    data_dir: /var/lib/postgresql/16/main
+    bin_dir: /usr/lib/postgresql/16/bin
+    config_dir: /etc/postgresql/16/main
+    pgpass: /var/lib/postgresql/.pgpass_patroni
+    authentication:
+        replication:
+        username: replicator
+        password: 123456
+        superuser:
+        username: postgres
+        password: 123456
+    parameters:
+        unix_socket_directories: /var/run/postgresql
+
+    remove_data_directory_on_rewind_failure: false
+    remove_data_directory_on_diverged_timelines: false
+
+    create_replica_methods:
+        - basebackup
+    basebackup:
+        max-rate: '100M'
+        checkpoint: 'fast'
+
+    watchdog:
+    mode: off  # Allowed values: off, automatic, required
+    device: /dev/watchdog
+    safety_margin: 5
+
+    tags:
+    nofailover: false
+    noloadbalance: false
+    clonefrom: false
+    nosync: false
+
+ptrn-2:
+
+    ---
+
+    scope: postgres-cluster
+    name: ptrn-2
+    namespace: /service/
+
+    restapi:
+    listen: 192.168.2.91:8008
+    connect_address: 192.168.2.91:8008
+    authentication:
+        username: patroni
+        password: '123456'
+
+    etcd3:
+    hosts: 192.168.2.96:2379,192.168.2.91:2379,192.168.2.98:2379
+
+    bootstrap:
+    method: initdb
+    dcs:
+        ttl: 60
+        loop_wait: 10
+        retry_timeout: 27
+        maximum_lag_on_failover: 2048576
+        master_start_timeout: 300
+        synchronous_mode: true
+        synchronous_mode_strict: false
+        synchronous_node_count: 1
+        postgresql:
+        use_pg_rewind: false
+        use_slots: true
+        parameters:
+            max_connections: 800
+            superuser_reserved_connections: 5
+            max_locks_per_transaction: 64
+            max_prepared_transactions: 0
+            huge_pages: off
+            shared_buffers: 5GB
+            work_mem: 218453kB
+            maintenance_work_mem: 1280MB
+            effective_cache_size: 15GB
+            checkpoint_timeout: 15min
+            checkpoint_completion_target: 0.9
+            min_wal_size: 2GB
+            max_wal_size: 8GB
+            wal_buffers: 16MB
+            default_statistics_target: 100
+            seq_page_cost: 1
+            random_page_cost: 4
+            effective_io_concurrency: 2
+            synchronous_commit: on
+            autovacuum: on
+            autovacuum_max_workers: 5
+            autovacuum_vacuum_scale_factor: 0.01
+            autovacuum_analyze_scale_factor: 0.02
+            autovacuum_vacuum_cost_limit: 200
+            autovacuum_vacuum_cost_delay: 20
+            autovacuum_naptime: 1s
+            max_files_per_process: 4096
+            archive_mode: on
+            archive_timeout: 1800s
+            archive_command: cd .
+            wal_level: replica
+            wal_keep_segments: 130
+            max_wal_senders: 10
+            max_replication_slots: 10
+            hot_standby: on
+            hot_standby_feedback: True
+            wal_log_hints: on
+            shared_preload_libraries: pg_stat_statements,auto_explain
+            pg_stat_statements.max: 10000
+            pg_stat_statements.track: all
+            pg_stat_statements.save: off
+            auto_explain.log_min_duration: 10s
+            auto_explain.log_analyze: true
+            auto_explain.log_buffers: true
+            auto_explain.log_timing: false
+            auto_explain.log_triggers: true
+            auto_explain.log_verbose: true
+            auto_explain.log_nested_statements: true
+            track_io_timing: on
+            log_lock_waits: on
+            log_temp_files: 0
+            track_activities: on
+            track_counts: on
+            track_functions: all
+            log_checkpoints: on
+            logging_collector: on
+            log_statement: mod
+            log_truncate_on_rotation: on
+            log_rotation_age: 1d
+            log_rotation_size: 0
+            log_line_prefix: '%m [%p] %q%u@%d '
+            log_filename: 'postgresql-%a.log'
+            log_directory: /var/log/postgresql
+
+    initdb:
+        - encoding: UTF8
+        - locale: en_US.UTF-8
+        - data-checksums
+
+    pg_hba:  # должен содержать адреса ВСЕХ машин, используемых в кластере
+        - host all all 0.0.0.0/0 md5
+        - host replication replicator 127.0.0.1/32 md5
+        - host replication replicator 10.0.2.0/24 md5
+
+    postgresql:
+    listen: 192.168.2.91,127.0.0.1:5432
+    connect_address: 192.168.2.91:5432
+    use_unix_socket: true
+    data_dir: /var/lib/postgresql/16/main
+    bin_dir: /usr/lib/postgresql/16/bin
+    config_dir: /etc/postgresql/16/main
+    pgpass: /var/lib/postgresql/.pgpass_patroni
+    authentication:
+        replication:
+        username: replicator
+        password: 123456
+        superuser:
+        username: postgres
+        password: 123456
+    parameters:
+        unix_socket_directories: /var/run/postgresql
+
+    remove_data_directory_on_rewind_failure: false
+    remove_data_directory_on_diverged_timelines: false
+
+    create_replica_methods:
+        - basebackup
+    basebackup:
+        max-rate: '100M'
+        checkpoint: 'fast'
+
+    watchdog:
+    mode: off  # Allowed values: off, automatic, required
+    device: /dev/watchdog
+    safety_margin: 5
+
+    tags:
+    nofailover: false
+    noloadbalance: false
+    clonefrom: false
+    nosync: false
+
+Назначаем права:
+
+    chown postgres:postgres -R /etc/patroni
+    chmod 700 /etc/patroni
+
+Тестируем запуск Patroni на обеих нодах.
+Перед стартом удаляем папку **/var/lib/postgresql/16** на ptrn-2 - если этого не сделать, то Patroni будет считать, что это отделный кластер:
+
+    sudo -u postgres patroni /etc/patroni/patroni.yml
+
+В результате на ptrn-2 создается файл .pgpass_patroni, на который надо добавить права:
+
+    chown postgres:postgres /var/lib/postgresql/.pgpass_patroni
+    chmod 0600 /var/lib/postgresql/.pgpass_patroni
+    cat /var/lib/postgresql/.pgpass_patroni
+    192.168.2.96:5432:*:replicator:123456
+
+На ptrn-1 такой файл не создается, так как предполагается односторонняя репликация.
+Но на всякий случай на будущее создадим его руками:
+
+    cat /var/lib/postgresql/.pgpass_patroni
+    192.168.2.91:5432:*:replicator:123456
+
+Создаем на каждой ноде systemd-юнит:
+
+    root@ptrn-1:~# cat /etc/systemd/system/patroni.service
+    [Unit]
+    Description=High availability PostgreSQL Cluster
+    After=syslog.target network.target
+
+    [Service]
+    Type=simple
+    User=postgres
+    Group=postgres
+
+    # Read in configuration file if it exists, otherwise proceed
+    EnvironmentFile=-/etc/patroni_env.conf
+
+    # Start the patroni process
+    ExecStart=/usr/bin/patroni /etc/patroni/patroni.yml
+
+    # Send HUP to reload from patroni.yml
+    ExecReload=/bin/kill -s HUP $MAINPID
+
+    # only kill the patroni process, not it's children, so it will gracefully stop postgres
+    KillMode=process
+
+    # Give a reasonable amount of time for the server to start up/shut down
+    TimeoutSec=60
+
+    # Do not restart the service if it crashes, we want to manually inspect database on failure
+    Restart=no
+
+    [Install]
+    WantedBy=multi-user.target
+
+Стартуем юнит, добавляем в enabled:
+
+    systemctl daemon-reload
+    systemctl start patroni
+    systemctl status patroni
+    systemctl enable patroni
+
+Проверяем статус служб:
+
+ptrn-1:
+
+    Sep 13 20:15:40 ptrn-1 patroni[26747]: 2025-09-13 20:15:40,885 INFO: no action. I am (ptrn-1), the leader with the lock
+    Sep 13 20:15:46 ptrn-1 patroni[26747]: 2025-09-13 20:15:46,885 INFO: no action. I am (ptrn-1), the leader with the lock
+    Sep 13 20:15:52 ptrn-1 patroni[26747]: 2025-09-13 20:15:52,886 INFO: no action. I am (ptrn-1), the leader with the lock
+    Sep 13 20:15:58 ptrn-1 patroni[26747]: 2025-09-13 20:15:58,886 INFO: no action. I am (ptrn-1), the leader with the lock
+    Sep 13 20:16:04 ptrn-1 patroni[26747]: 2025-09-13 20:16:04,886 INFO: no action. I am (ptrn-1), the leader with the lock
+
+ptrn-2:
+
+    Sep 13 20:16:05 ptrn-2 patroni[25766]: 2025-09-13 20:16:05,478 INFO: no action. I am (ptrn-2), a secondary, and following a leader (ptrn-1)
+    Sep 13 20:16:11 ptrn-2 patroni[25766]: 2025-09-13 20:16:11,477 INFO: no action. I am (ptrn-2), a secondary, and following a leader (ptrn-1)
+    Sep 13 20:16:17 ptrn-2 patroni[25766]: 2025-09-13 20:16:17,477 INFO: no action. I am (ptrn-2), a secondary, and following a leader (ptrn-1)
+    Sep 13 20:16:23 ptrn-2 patroni[25766]: 2025-09-13 20:16:23,478 INFO: no action. I am (ptrn-2), a secondary, and following a leader (ptrn-1)
+    Sep 13 20:16:29 ptrn-2 patroni[25766]: 2025-09-13 20:16:29,477 INFO: no action. I am (ptrn-2), a secondary, and following a leader (ptrn-1)
+
+Выглядит так, как будто всё хорошо. Проверяем статус с помощью **patronictl**:
+
+ptrn-1:
+
+    root@ptrn-1:~# patronictl -c /etc/patroni/patroni.yml list
+    + Cluster: postgres-cluster (7549272789437793390) -+----+-----------+
+    | Member | Host         | Role         | State     | TL | Lag in MB |
+    +--------+--------------+--------------+-----------+----+-----------+
+    | ptrn-1 | 192.168.2.96 | Leader       | running   |  3 |           |
+    | ptrn-2 | 192.168.2.91 | Sync Standby | streaming |  3 |         0 |
+    +--------+--------------+--------------+-----------+----+-----------+
+
+ptrn-2:
+
+    root@ptrn-2:~# patronictl -c /etc/patroni/patroni.yml list
+    + Cluster: postgres-cluster (7549272789437793390) -+----+-----------+
+    | Member | Host         | Role         | State     | TL | Lag in MB |
+    +--------+--------------+--------------+-----------+----+-----------+
+    | ptrn-1 | 192.168.2.96 | Leader       | running   |  3 |           |
+    | ptrn-2 | 192.168.2.91 | Sync Standby | streaming |  3 |         0 |
+    +--------+--------------+--------------+-----------+----+-----------+
+
+На этом пока с Patroni всё. Тестировать failover, switchover и прочие режимы работы будем позже.
+Сейчас надо настроить observability.
+
+Выбираем вот этот exporter, представляющий собой бинарь на Go: https://github.com/gopaytech/patroni_exporter
+
+Устанавливаем утилиту make и среду Go:
+
+    apt install make
+    add-apt-repository ppa:longsleep/golang-backports
+    apt update
+    apt install golang-go
+
+Собираем приложение:
+
+    make build
+
+И получаем бинарь, отдающий на порту 9933 метрики Patroni:
+
+    root@ptrn-2:~# cd patroni_exporter-main/.build/linux-amd64/
+    root@ptrn-2:~/patroni_exporter-main/.build/linux-amd64# ./patroni_exporter --patroni.host="http://ptrn-2" --patroni.port=8008
+    level=info ts=2025-09-13T20:22:49.354Z caller=main.go:37 msg="Starting patroni_exporter" version="(version=, branch=, revision=)"
+    level=info ts=2025-09-13T20:22:49.355Z caller=main.go:38 msg="Build context" context="(go=go1.25.1, user=, date=)"
+    level=info ts=2025-09-13T20:22:49.355Z caller=main.go:47 msg="Listening on address" address=:9933
+
+Видим, что метрики отдаются: 
+
+![Метрики Patroni Exporter](images/10-patroni_metrics.png)
+
+Собираем и этот экспортёр в systemd-юнит:
+
+    root@ptrn-2:~# vim /etc/systemd/system/patroni-exporter.service
+    [Unit]
+    Description=Patroni Exporter service
+    After=syslog.target network.target
+
+    [Service]
+    Type=simple
+    User=postgres
+    Group=postgres
+
+    # Start the patroni process
+    ExecStart=/usr/local/bin/patroni_exporter --patroni.host="http://ptrn-2" --patroni.port=8008
+
+    # Send HUP to reload from patroni.yml
+    ExecReload=/bin/kill -s HUP $MAINPID
+
+    # only kill the patroni process, not it's children, so it will gracefully stop postgres
+    KillMode=process
+
+    # Give a reasonable amount of time for the server to start up/shut down
+    TimeoutSec=60
+
+    # Do not restart the service if it crashes, we want to manually inspect database on failure
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+
+Стартуем и енаблим:
+
+    systemctl daemon-reload
+    systemctl start patroni-exporter.service
+    systemctl status patroni-exporter.service
+    systemctl enable patroni-exporter.service
+
+И добавляем в конфиг Prometheus:
+
+    global:
+    scrape_interval: 15s
+
+    rule_files:
+    - "rules/node-exporter.yml"
+    - "rules/etcd-exporter.yml"
+    - "rules/postgres-exporter.yml"
+
+    scrape_configs:
+    - job_name: 'prometheus'
+        static_configs:
+        - targets: ['localhost:9090']
+
+    - job_name: 'node_exporter'
+        static_configs:
+        - targets: ['ptrn-1:9100', 'ptrn-2:9100', 'ptrn-3:9100', 'prmt-1:9100']
+
+    - job_name: 'etcd'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+        - targets: ["ptrn-1:2379", "ptrn-2:2379", "ptrn-3:2379"]
+
+    - job_name: 'postgres'
+        static_configs:
+        - targets: ["ptrn-1:9187", "ptrn-2:9187"]
+
+    - job_name: 'patroni'
+        static_configs:
+        - targets: ["ptrn-1:9933", "ptrn-2:9933"]
+
+Так как готовых наборов алертов и дашбордов для Графаны для этого экспортёра нет - сосредоточимся на следующих шагах!
+
 ## Установка и настройка keepalived
-
-
