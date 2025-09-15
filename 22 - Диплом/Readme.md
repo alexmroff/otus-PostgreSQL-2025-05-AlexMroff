@@ -13,6 +13,9 @@
 * PostgreSQL 16
 * Postgres Exporter: https://github.com/prometheus-community/postgres_exporter
 * Patroni 4.0.6
+* Patroni Exporter: https://github.com/gopaytech/patroni_exporter
+* PgBouncer 1.24.1
+* PgBouncer Exporter: https://github.com/prometheus-community/pgbouncer_exporter
 
 ## Первичная подготовка
 
@@ -986,4 +989,152 @@ ptrn-2:
 
 Так как готовых наборов алертов и дашбордов для Графаны для этого экспортёра нет - сосредоточимся на следующих шагах!
 
-## Установка и настройка keepalived
+## Установка и настройка PGbouncer
+
+Ставим на ptrn-1 и ptrn-2:
+
+    apt -y install pgbouncer
+
+Создаем конфиги:
+
+    root@ptrn-2:~# vim /etc/pgbouncer/pgbouncer.ini
+    [databases]
+    postgres = host=127.0.0.1 port=5432 dbname=postgres
+    * = host=127.0.0.1 port=5432
+
+    [pgbouncer]
+    logfile = /var/log/postgresql/pgbouncer.log
+    pidfile = /var/run/postgresql/pgbouncer.pid
+    listen_addr = *
+    listen_port = 6432
+    unix_socket_dir = /var/run/postgresql
+    auth_type = md5
+    auth_file = /etc/pgbouncer/userlist.txt
+    auth_user = postgres
+    auth_query = SELECT usename, passwd FROM pg_shadow WHERE usename=$1
+    admin_users = postgres
+    ignore_startup_parameters = extra_float_digits,geqo,search_path
+
+    pool_mode = session
+    server_reset_query = DISCARD ALL
+    max_client_conn = 10000
+    reserve_pool_size = 1
+    reserve_pool_timeout = 1
+    max_db_connections = 1000
+    default_pool_size = 500
+    pkt_buf = 8192
+    listen_backlog = 4096
+    log_connections = 1
+    log_disconnections = 1
+
+Создаём файлы с паролями (безопасность пока выносим за скобки):
+
+    root@ptrn-2:~# cat /etc/pgbouncer/userlist.txt
+    "postgres" "123456"
+    "pgbouncer" "123456"
+
+Перезапускаем сервис и пробуем коннектиться на порт 6432:
+
+    sudo systemctl restart pgbouncer
+    root@ptrn-2:~# cat /etc/pgbouncer/userlist.txt
+    "postgres" "123456"
+    "pgbouncer" "123456"
+    root@ptrn-2:~# sudo su - postgres
+    postgres@ptrn-2:~$ psql -p 6432 -h 127.0.0.1 -U postgres postgres
+    Password for user postgres:
+    psql (16.10 (Ubuntu 16.10-1.pgdg24.04+1))
+    Type "help" for help.
+
+    postgres=#
+
+PGbouncer работает. Меняем порт в pgAdmin и убеждаемся, что сервер доступен:
+
+![Порт 6432 доступен!](images/11-pgAdmin-to-PGbouncer.png)
+
+Скачиваем и устанавливаем PGbouncer Exporter: https://github.com/prometheus-community/pgbouncer_exporter
+
+    make build
+    mv ./pgbouncer_exporter /usr/local/bin
+
+Создаем юнит-файл и енаблим его:
+
+    root@ptrn-2:~# vim /etc/systemd/system/pgbouncer-exporter.service
+    [Unit]
+    Description=PGbouncer Exporter service
+    After=syslog.target network.target
+
+    [Service]
+    Type=simple
+    User=postgres
+    Group=postgres
+
+    # Start the patroni process
+    ExecStart=/usr/local/bin/pgbouncer_exporter --pgBouncer.connectionString="postgres://postgres:123456@localhost:6432/pgbouncer?sslmode=disable"
+
+    # Send HUP to reload from patroni.yml
+    ExecReload=/bin/kill -s HUP $MAINPID
+
+    # only kill the patroni process, not it's children, so it will gracefully stop postgres
+    KillMode=process
+
+    # Give a reasonable amount of time for the server to start up/shut down
+    TimeoutSec=60
+
+    # Do not restart the service if it crashes, we want to manually inspect database on failure
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+
+Команды:
+
+    systemctl daemon-reload
+    systemctl start pgbouncer-exporter.service
+    systemctl status pgbouncer-exporter.service
+    systemctl enable pgbouncer-exporter.service
+
+Проверяем порт 9127:
+
+![PGBouncer Exporter работает!](images/12-pgAdmin-Exporter-Metrics.png)
+
+Добавляем новые экспортёры в конфиг Prometheus:
+
+    root@prmt-1:~# cat /opt/prometheus/prometheus.yml
+    global:
+    scrape_interval: 15s
+
+    rule_files:
+    - "rules/node-exporter.yml"
+    - "rules/etcd-exporter.yml"
+    - "rules/postgres-exporter.yml"
+
+    scrape_configs:
+    - job_name: 'prometheus'
+        static_configs:
+        - targets: ['localhost:9090']
+
+    - job_name: 'node_exporter'
+        static_configs:
+        - targets: ['ptrn-1:9100', 'ptrn-2:9100', 'ptrn-3:9100', 'prmt-1:9100']
+
+    - job_name: 'etcd'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+        - targets: ["ptrn-1:2379", "ptrn-2:2379", "ptrn-3:2379"]
+
+    - job_name: 'postgres'
+        static_configs:
+        - targets: ["ptrn-1:9187", "ptrn-2:9187"]
+
+    - job_name: 'patroni'
+        static_configs:
+        - targets: ["ptrn-1:9933", "ptrn-2:9933"]
+
+    - job_name: 'pgbouncer'
+        static_configs:
+        - targets: ["ptrn-1:9127", "ptrn-2:9127"]
+
+## Keepalived и HAProxy
+
+..
