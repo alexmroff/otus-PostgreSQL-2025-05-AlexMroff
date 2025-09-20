@@ -16,6 +16,9 @@
 * Patroni Exporter: https://github.com/gopaytech/patroni_exporter
 * PgBouncer 1.24.1
 * PgBouncer Exporter: https://github.com/prometheus-community/pgbouncer_exporter
+* HAProxy 2.8.5 (встроенный Exported)
+* keepalived v2.2.8
+* keepalived Exporter: https://github.com/gen2brain/keepalived_exporter
 
 ## Первичная подготовка
 
@@ -1135,6 +1138,365 @@ PGbouncer работает. Меняем порт в pgAdmin и убеждаем
         static_configs:
         - targets: ["ptrn-1:9127", "ptrn-2:9127"]
 
-## Keepalived и HAProxy
+## HAProxy
 
-..
+Устанавливаем на ptrn-1 и ptrn-2:
+
+    apt install haproxy
+
+Правим конфиг.
+ptrn-1:
+
+    vim /etc/haproxy/haproxy.cfg
+
+    global
+        maxconn 100000
+        log /dev/log    local0
+        log /dev/log    local1 notice
+        chroot /var/lib/haproxy
+        stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+        stats timeout 30s
+        user haproxy
+        group haproxy
+        daemon
+
+    defaults
+        mode               tcp
+        log                global
+        retries            2
+        timeout queue      5s
+        timeout connect    5s
+        timeout client     60m
+        timeout server     60m
+        timeout check      15s
+
+    listen stats
+        mode http
+        bind 192.168.2.96:7000
+        stats enable
+        stats uri /
+
+    listen postgres_master
+        bind *:5000
+        maxconn 10000
+        option tcplog
+        option httpchk OPTIONS /master
+        http-check expect status 200
+        default-server inter 3s fastinter 1s fall 3 rise 4 on-marked-down shutdown-sessions
+        server ptrn-1 192.168.2.96:6432 check port 8008
+        server ptrn-2 192.168.2.91:6432 check port 8008
+
+    listen postgres_replicas
+        bind *:5001
+        maxconn 10000
+        option tcplog
+        option httpchk OPTIONS /replica
+        balance roundrobin
+        http-check expect status 200
+        default-server inter 3s fastinter 1s fall 3 rise 2 on-marked-down shutdown-sessions
+        server ptrn-1 192.168.2.96:6432 check port 8008
+        server ptrn-2 192.168.2.91:6432 check port 8008
+
+ptrn-2:
+
+    vim /etc/haproxy/haproxy.cfg
+
+    global
+        maxconn 100000
+        log /dev/log    local0
+        log /dev/log    local1 notice
+        chroot /var/lib/haproxy
+        stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+        stats timeout 30s
+        user haproxy
+        group haproxy
+        daemon
+
+    defaults
+        mode               tcp
+        log                global
+        retries            2
+        timeout queue      5s
+        timeout connect    5s
+        timeout client     60m
+        timeout server     60m
+        timeout check      15s
+
+    listen stats
+        mode http
+        bind 192.168.2.91:7000
+        stats enable
+        stats uri /
+
+    listen postgres_master
+        bind *:5000
+        maxconn 10000
+        option tcplog
+        option httpchk OPTIONS /master
+        http-check expect status 200
+        default-server inter 3s fastinter 1s fall 3 rise 4 on-marked-down shutdown-sessions
+        server ptrn-1 192.168.2.96:6432 check port 8008
+        server ptrn-2 192.168.2.91:6432 check port 8008
+
+    listen postgres_replicas
+        bind *:5001
+        maxconn 10000
+        option tcplog
+        option httpchk OPTIONS /replica
+        balance roundrobin
+        http-check expect status 200
+        default-server inter 3s fastinter 1s fall 3 rise 2 on-marked-down shutdown-sessions
+        server ptrn-1 192.168.2.96:6432 check port 8008
+        server ptrn-2 192.168.2.91:6432 check port 8008
+
+Проверяем корректность конфига и рестартуем сервис:
+
+    root@ptrn-1:~# haproxy -f /etc/haproxy/haproxy.cfg -c
+    Configuration file is valid
+    root@ptrn-1:~# systemctl restart haproxy.service
+
+Проверяем эндпойнт **stats** на порте 7000:
+
+![Статистика HAProxy!](images/13-haproxy_stats.png)
+
+HAProxy работает, pgAdmin успешно подключается на порт 5000.
+
+Exporter для Prometheus включен в комплект поставки HAProxy и включен в конфиге выше.
+Добавим эндпойнты в конфиг Prometheus чуть позже, вместе с **keepalived**.
+
+## keepalived
+
+Устанавливаем:
+
+    apt install keepalived
+
+Выделяем кластеру виртуальный IP **192.168.2.40**.
+
+Конфигурим ptrn-1:
+
+    root@ptrn-1:~# vim /etc/keepalived/keepalived.conf
+    global_defs {
+    router_id ocp_vrrp
+    enable_script_security
+    script_user root
+    }
+
+    vrrp_script haproxy_check {
+    script "/opt/script/haproxy_check.sh"
+    interval 5 # check every 5 seconds
+    weight 2 # add 2 points of prio if OK
+    }
+
+    vrrp_instance VI_1 {
+    interface ens34
+    virtual_router_id 11
+    priority  101 # 101 on master, 100 on backup
+    advert_int 10
+    state  MASTER
+    virtual_ipaddress {
+        192.168.2.40
+    }
+    track_script {
+        haproxy_check
+    }
+    authentication {
+        auth_type PASS
+        auth_pass 123456
+    }
+    }
+
+Конфигурим ptrn-2:
+
+    global_defs {
+    router_id ocp_vrrp
+    enable_script_security
+    script_user root
+    }
+
+    vrrp_script haproxy_check {
+    script "/opt/script/haproxy_check.sh"
+    interval 5 # check every 5 seconds
+    weight 2 # add 2 points of prio if OK
+    }
+
+    vrrp_instance VI_1 {
+    interface ens34
+    virtual_router_id 11
+    priority  100 # 101 on master, 100 on backup
+    advert_int 10
+    state  BACKUP
+    virtual_ipaddress {
+        192.168.2.40
+    }
+    track_script {
+        haproxy_check
+    }
+    authentication {
+        auth_type PASS
+        auth_pass 123456
+    }
+    }
+
+Создаем скрипт проверки HAProxy, добавляем права и меняем режим:
+
+    root@ptrn-2:~# vim /opt/script/haproxy_check.sh
+    #!/bin/bash
+    /bin/kill -0 `cat run/haproxy.pid`
+    
+    chmod 700 /opt/script/haproxy_check.sh
+    chmod +x /opt/script/haproxy_check.sh
+
+Запускаем и включаем сервис:
+
+    systemctl start keepalived
+    systemctl enable keepalived
+    systemctl status keepalived
+
+Статус на ptrn-1:
+
+    root@ptrn-1:~# systemctl status keepalived.service
+    Sep 20 12:34:25 ptrn-1 Keepalived[108656]: Running on Linux 6.8.0-83-generic #83-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  5 21:46:54 UTC 2025 (built for Linux 6.8.0)
+    Sep 20 12:34:25 ptrn-1 Keepalived[108656]: Command line: '/usr/sbin/keepalived' '--dont-fork'
+    Sep 20 12:34:25 ptrn-1 Keepalived[108656]: Configuration file /etc/keepalived/keepalived.conf
+    Sep 20 12:34:25 ptrn-1 Keepalived[108656]: NOTICE: setting config option max_auto_priority should result in better keepalived performance
+    Sep 20 12:34:25 ptrn-1 Keepalived[108656]: Starting VRRP child process, pid=108659
+    Sep 20 12:34:25 ptrn-1 Keepalived[108656]: Startup complete
+    Sep 20 12:34:25 ptrn-1 systemd[1]: Started keepalived.service - Keepalive Daemon (LVS and VRRP).
+    Sep 20 12:34:25 ptrn-1 Keepalived_vrrp[108659]: (VI_1) Entering BACKUP STATE (init)
+    Sep 20 12:34:25 ptrn-1 Keepalived_vrrp[108659]: VRRP_Script(haproxy_check) succeeded
+    Sep 20 12:34:25 ptrn-1 Keepalived_vrrp[108659]: (VI_1) Changing effective priority from 101 to 103
+
+Статус на ptrn-2:
+
+    root@ptrn-2:~# systemctl status keepalived.service
+    Sep 20 12:34:24 ptrn-2 Keepalived[113360]: Running on Linux 6.8.0-83-generic #83-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  5 21:46:54 UTC 2025 (built for Linux 6.8.0)
+    Sep 20 12:34:24 ptrn-2 Keepalived[113360]: Command line: '/usr/sbin/keepalived' '--dont-fork'
+    Sep 20 12:34:24 ptrn-2 Keepalived[113360]: Configuration file /etc/keepalived/keepalived.conf
+    Sep 20 12:34:24 ptrn-2 Keepalived[113360]: NOTICE: setting config option max_auto_priority should result in better keepalived performance
+    Sep 20 12:34:24 ptrn-2 Keepalived[113360]: Starting VRRP child process, pid=113362
+    Sep 20 12:34:24 ptrn-2 Keepalived[113360]: Startup complete
+    Sep 20 12:34:24 ptrn-2 systemd[1]: Started keepalived.service - Keepalive Daemon (LVS and VRRP).
+    Sep 20 12:34:24 ptrn-2 Keepalived_vrrp[113362]: (VI_1) Entering BACKUP STATE (init)
+    Sep 20 12:34:24 ptrn-2 Keepalived_vrrp[113362]: VRRP_Script(haproxy_check) succeeded
+    Sep 20 12:34:24 ptrn-2 Keepalived_vrrp[113362]: (VI_1) Changing effective priority from 100 to 102
+
+keepalived работает!
+Устанавливаем Exporter:
+
+    go install github.com/gen2brain/keepalived_exporter@latest
+
+Делаем юнит:
+
+    root@ptrn-1:~# vim /etc/systemd/system/keepalived-exporter.service
+    [Unit]
+    Description=Keepalived Exporter service
+    After=syslog.target network.target
+
+    [Service]
+    Type=simple
+    User=postgres
+    Group=postgres
+
+    # Start the  process
+    ExecStart=/usr/local/bin/keepalived_exporter
+
+    # Send HUP to reload from patroni.yml
+    ExecReload=/bin/kill -s HUP $MAINPID
+
+    # only kill the patroni process, not it's children, so it will gracefully stop postgres
+    KillMode=process
+
+    # Give a reasonable amount of time for the server to start up/shut down
+    TimeoutSec=60
+
+    # Do not restart the service if it crashes, we want to manually inspect database on failure
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+
+    root@ptrn-1:~# systemctl daemon-reload
+    root@ptrn-1:~# systemctl enable keepalived-exporter.service --now
+
+Финальный конфиг Prometheus:
+
+    global:
+    scrape_interval: 15s
+
+    rule_files:
+    - "rules/node-exporter.yml"
+    - "rules/etcd-exporter.yml"
+    - "rules/postgres-exporter.yml"
+
+    scrape_configs:
+    - job_name: 'prometheus'
+        static_configs:
+        - targets: ['localhost:9090']
+
+    - job_name: 'node_exporter'
+        static_configs:
+        - targets: ['ptrn-1:9100', 'ptrn-2:9100', 'ptrn-3:9100', 'prmt-1:9100']
+
+    - job_name: 'etcd'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+        - targets: ["ptrn-1:2379", "ptrn-2:2379", "ptrn-3:2379"]
+
+    - job_name: 'postgres'
+        static_configs:
+        - targets: ["ptrn-1:9187", "ptrn-2:9187"]
+
+    - job_name: 'patroni'
+        static_configs:
+        - targets: ["ptrn-1:9933", "ptrn-2:9933"]
+
+    - job_name: 'pgbouncer'
+        static_configs:
+        - targets: ["ptrn-1:9127", "ptrn-2:9127"]
+
+    - job_name: 'haproxy'
+        static_configs:
+        - targets: ["ptrn-1:7000", "ptrn-2:7000"]
+
+    - job_name: 'keepalived'
+        static_configs:
+        - targets: ["ptrn-1:9650", "ptrn-2:9650"]
+
+pgAdmin успешно подключается к кластеру по адресу **192.168.2.40:5000**, а значит задача выполнена!
+
+## Конец
+
+Наработанная история смен лидера:
+
+    root@ptrn-1:~# patronictl history
+    +----+-----------+------------------------------+----------------------------------+------------+
+    | TL |       LSN | Reason                       | Timestamp                        | New Leader |
+    +----+-----------+------------------------------+----------------------------------+------------+
+    |  1 |  22569424 | no recovery target specified | 2025-09-13T18:05:16.856097+00:00 | ptrn-1     |
+    |  2 | 100663456 | no recovery target specified | 2025-09-13T18:26:09.904817+00:00 | ptrn-1     |
+    |  3 | 150995104 | no recovery target specified | 2025-09-15T18:00:26.149684+00:00 | ptrn-2     |
+    |  4 | 167772320 | no recovery target specified | 2025-09-15T18:05:02.524992+00:00 | ptrn-1     |
+    |  5 | 184549536 | no recovery target specified | 2025-09-15T18:06:40.298075+00:00 | ptrn-2     |
+    |  6 | 201326752 | no recovery target specified | 2025-09-15T18:07:42.769595+00:00 | ptrn-1     |
+    |  7 | 218103968 | no recovery target specified | 2025-09-15T18:08:10.326220+00:00 | ptrn-2     |
+    |  8 | 234881184 | no recovery target specified | 2025-09-15T18:23:01.022779+00:00 | ptrn-1     |
+    |  9 | 268435616 | no recovery target specified | 2025-09-15T19:34:27.298748+00:00 | ptrn-2     |
+    | 10 | 285212832 | no recovery target specified | 2025-09-20T11:00:33.387729+00:00 | ptrn-1     |
+    | 11 | 301990048 | no recovery target specified | 2025-09-20T11:02:37.750826+00:00 | ptrn-2     |
+    +----+-----------+------------------------------+----------------------------------+------------+
+
+Однажды после перезагрузки ptrn-1 на нем не стартовал PostgreSQL.
+Пришлось переинициализировать ноду:
+
+    root@ptrn-1:~# patronictl reinit postgres-cluster ptrn-1
+
+После этого работоспособность кластера была восстановлена:
+
+    patronictl list
+    + Cluster: postgres-cluster (7549272789437793390) -+-----------+
+    | Member | Host         | Role    | State     | TL | Lag in MB |
+    +--------+--------------+---------+-----------+----+-----------+
+    | ptrn-1 | 192.168.2.96 | Replica | streaming | 12 |         0 |
+    | ptrn-2 | 192.168.2.91 | Leader  | running   | 12 |           |
+    +--------+--------------+---------+-----------+----+-----------+
